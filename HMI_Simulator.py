@@ -1,13 +1,17 @@
-# HMI Simulator with PID Temperature Control, Two Tanks and a Valve
-# ---------------------------------------------------------------
+# HMI Simulator with PID Temperature Control and Simple Fluid Network
+# ------------------------------------------------------------------
 # Run: python hmi_simulator.py
 # Dependencies: PyQt5  (pip install pyqt5)
 #
-# This program simulates a simple process consisting of two liquid tanks connected
-# by a valve and a heater controlled by a PID controller. The GUI is drawn with
-# PyQt5 and updates every 100 ms. Tank 1 drains through the valve into Tank 2.
-# A heater in Tank 2 is modulated by a PID loop to hold the requested temperature
-# set‑point.                                                  
+# This program simulates a simple process consisting of two liquid tanks
+# connected by a valve and a heater controlled by a PID controller.  The GUI is
+# drawn with PyQt5 and updates every 100 ms.  The original example has been
+# extended with a small fluid network consisting of three valves:
+#   * "Fill"   – adds fluid to Tank 1
+#   * "Valve"  – connects Tank 1 to Tank 2 (flow depends on level difference)
+#   * "Drain"  – removes fluid from Tank 2
+# A heater in Tank 2 is modulated by a PID loop to hold the requested
+# temperature set‑point.
 
 import sys
 from PyQt5.QtWidgets import (
@@ -108,8 +112,16 @@ class MainWindow(QMainWindow):
         self.level1 = 80.0  # % full
         self.level2 = 20.0  # % full
         self.temp2 = 20.0   # °C
-        self.valve_open = False
-        self.flow_rate_pct_per_s = 5.0  # %/s when valve open
+
+        # Valve states -------------------------------------------------
+        self.valve_fill_open = False    # feed into Tank 1
+        self.valve12_open = False       # between Tank 1 and 2
+        self.valve_drain_open = False   # drain from Tank 2
+
+        # Flow coefficients (approx %/s) --------------------------------
+        self.fill_rate = 5.0
+        self.drain_rate = 5.0
+        self.pipe_coeff = 3.0  # affects flow between tanks
 
         # PID to control heater power (0‑100)
         self.pid = PIDController(kp=2.0, ki=0.5, kd=0.1, setpoint=60.0)
@@ -118,9 +130,17 @@ class MainWindow(QMainWindow):
         self.tank1 = TankWidget("Tank 1")
         self.tank2 = TankWidget("Tank 2")
 
-        self.valve_btn = QPushButton("Valve: CLOSED")
+        self.valve_btn = QPushButton("Valve: CLOSED")  # between tanks
         self.valve_btn.setCheckable(True)
-        self.valve_btn.clicked.connect(self._toggle_valve)
+        self.valve_btn.clicked.connect(self._toggle_valve12)
+
+        self.fill_btn = QPushButton("Fill: CLOSED")
+        self.fill_btn.setCheckable(True)
+        self.fill_btn.clicked.connect(self._toggle_fill)
+
+        self.drain_btn = QPushButton("Drain: CLOSED")
+        self.drain_btn.setCheckable(True)
+        self.drain_btn.clicked.connect(self._toggle_drain)
 
         self.setpoint_slider = QSlider(Qt.Vertical)
         self.setpoint_slider.setRange(20, 100)
@@ -137,8 +157,11 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.valve_btn, 0, 1, alignment=Qt.AlignCenter)
         grid.addWidget(self.tank2, 0, 2)
         grid.addWidget(self.setpoint_slider, 0, 3, alignment=Qt.AlignHCenter)
+
+        grid.addWidget(self.fill_btn, 1, 0, alignment=Qt.AlignCenter)
+        grid.addWidget(self.drain_btn, 1, 2, alignment=Qt.AlignCenter)
         grid.addWidget(self.lbl_setpoint, 1, 3, alignment=Qt.AlignHCenter)
-        grid.addWidget(self.lbl_temp, 1, 2, alignment=Qt.AlignHCenter)
+        grid.addWidget(self.lbl_temp, 2, 2, alignment=Qt.AlignHCenter)
 
         central = QWidget()
         central.setLayout(grid)
@@ -152,9 +175,17 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------------
     #                             Call‑backs
     # ---------------------------------------------------------------------
-    def _toggle_valve(self, checked: bool):
-        self.valve_open = checked
+    def _toggle_valve12(self, checked: bool):
+        self.valve12_open = checked
         self.valve_btn.setText("Valve: OPEN" if checked else "Valve: CLOSED")
+
+    def _toggle_fill(self, checked: bool):
+        self.valve_fill_open = checked
+        self.fill_btn.setText("Fill: OPEN" if checked else "Fill: CLOSED")
+
+    def _toggle_drain(self, checked: bool):
+        self.valve_drain_open = checked
+        self.drain_btn.setText("Drain: OPEN" if checked else "Drain: CLOSED")
 
     def _set_setpoint(self, value: int):
         self.pid.setpoint = float(value)
@@ -166,11 +197,27 @@ class MainWindow(QMainWindow):
     def _update_sim(self):
         dt = self.DT
 
-        # Flow between tanks
-        if self.valve_open and self.level1 > 0.0:
-            dlevel = min(self.flow_rate_pct_per_s * dt, self.level1)
-            self.level1 -= dlevel
-            self.level2 = min(self.level2 + dlevel, 100.0)
+        # Fill Tank 1 from feed
+        if self.valve_fill_open:
+            self.level1 = min(self.level1 + self.fill_rate * dt, 100.0)
+
+        # Flow between tanks (simple sqrt(head) relation)
+        if self.valve12_open and self.level1 > self.level2:
+            head = self.level1 - self.level2
+            flow = self.pipe_coeff * (head ** 0.5) * dt
+            flow = min(flow, self.level1)
+            self.level1 -= flow
+            old_level2 = self.level2
+            self.level2 = min(self.level2 + flow, 100.0)
+            # mix incoming ambient fluid (20°C) with tank2 contents
+            if self.level2 > 0:
+                self.temp2 = (
+                    self.temp2 * old_level2 + 20.0 * flow
+                ) / self.level2
+
+        # Drain Tank 2
+        if self.valve_drain_open:
+            self.level2 = max(self.level2 - self.drain_rate * dt, 0.0)
 
         # Heater power from PID (0‑100)
         heater_power = max(0.0, min(100.0, self.pid.update(self.temp2, dt)))

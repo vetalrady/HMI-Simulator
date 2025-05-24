@@ -99,6 +99,40 @@ class TankWidget(QWidget):
         )
 
 
+class PipeWidget(QWidget):
+    """Simple horizontal pipe widget with basic flow animation."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.flow = 0.0
+        self._phase = 0.0
+        self.setMinimumSize(120, 40)
+
+    def set_flow(self, flow: float):
+        """Set current flow and trigger repaint."""
+        self.flow = flow
+        # phase advances proportionally to flow magnitude
+        self._phase = (self._phase + abs(flow)) % 10.0
+        self.update()
+
+    def paintEvent(self, evt):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(10, 10, -10, -10)
+        painter.setPen(QPen(Qt.black, 2))
+        painter.drawRect(rect)
+
+        if self.flow > 0.001:
+            painter.fillRect(rect.adjusted(1, 1, -1, -1), QColor(160, 200, 255))
+            step = 10
+            offset = int(self._phase) % step
+            for x in range(rect.left() + offset, rect.right(), step):
+                painter.drawLine(x, rect.top(), x - 6, rect.bottom())
+        else:
+            painter.fillRect(rect.adjusted(1, 1, -1, -1), QColor(230, 230, 230))
+
+
 class MainWindow(QMainWindow):
     """Main application window holding all widgets and the simulation loop."""
 
@@ -129,6 +163,7 @@ class MainWindow(QMainWindow):
         # ----- UI widgets ----------------------------------------------
         self.tank1 = TankWidget("Tank 1")
         self.tank2 = TankWidget("Tank 2")
+        self.pipe = PipeWidget()
 
         self.valve_btn = QPushButton("Valve: CLOSED")  # between tanks
         self.valve_btn.setCheckable(True)
@@ -154,11 +189,12 @@ class MainWindow(QMainWindow):
         # Layout ---------------------------------------------------------
         grid = QGridLayout()
         grid.addWidget(self.tank1, 0, 0)
-        grid.addWidget(self.valve_btn, 0, 1, alignment=Qt.AlignCenter)
+        grid.addWidget(self.pipe, 0, 1, alignment=Qt.AlignCenter)
         grid.addWidget(self.tank2, 0, 2)
         grid.addWidget(self.setpoint_slider, 0, 3, alignment=Qt.AlignHCenter)
 
         grid.addWidget(self.fill_btn, 1, 0, alignment=Qt.AlignCenter)
+        grid.addWidget(self.valve_btn, 1, 1, alignment=Qt.AlignCenter)
         grid.addWidget(self.drain_btn, 1, 2, alignment=Qt.AlignCenter)
         grid.addWidget(self.lbl_setpoint, 1, 3, alignment=Qt.AlignHCenter)
         grid.addWidget(self.lbl_temp, 2, 2, alignment=Qt.AlignHCenter)
@@ -197,6 +233,8 @@ class MainWindow(QMainWindow):
     def _update_sim(self):
         dt = self.DT
 
+        flow12 = 0.0
+
         # Fill Tank 1 from feed
         if self.valve_fill_open:
             self.level1 = min(self.level1 + self.fill_rate * dt, 100.0)
@@ -209,6 +247,7 @@ class MainWindow(QMainWindow):
             self.level1 -= flow
             old_level2 = self.level2
             self.level2 = min(self.level2 + flow, 100.0)
+            flow12 = flow
             # mix incoming ambient fluid (20°C) with tank2 contents
             if self.level2 > 0:
                 self.temp2 = (
@@ -232,6 +271,7 @@ class MainWindow(QMainWindow):
         self.tank2.set_level(self.level2)
         self.tank2.set_temperature(self.temp2)
         self.lbl_temp.setText(f"T₂: {self.temp2:.1f} °C")
+        self.pipe.set_flow(flow12 / dt)
 
 
 # -------------------------------------------------------------------------
